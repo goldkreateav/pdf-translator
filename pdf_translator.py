@@ -146,6 +146,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     p.add_argument("--font-path", default=None, help="Path to a TTF font with Cyrillic support (optional)")
     p.add_argument("--dpi", type=int, default=150, help="Background render DPI (default: 150)")
+    p.add_argument(
+        "--rasterize-background",
+        action="store_true",
+        help="Rasterize each page as an image background (much larger output). Default: off.",
+    )
     return p
 
 
@@ -170,7 +175,11 @@ def main() -> int:
         src_pdf_path=pdf_path,
         out_pdf_path=out_path,
         pages_lines=pages_lines,
-        cfg=RenderConfig(font_path=args.font_path, dpi=args.dpi),
+        cfg=RenderConfig(
+            font_path=args.font_path,
+            dpi=args.dpi,
+            rasterize_background=bool(args.rasterize_background),
+        ),
     )
     return 0
 

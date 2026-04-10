@@ -42,9 +42,8 @@ python pdf_translator.py original.pdf --font-path "C:\\Windows\\Fonts\\arial.ttf
 
 ## How layout is preserved (v1)
 
-- Each page is rasterized as a **background image**.
-- Each extracted text line bbox is **white-out** filled.
-- The translated line is drawn back into the **same bbox**; if it doesn’t fit, font size is reduced.
+- Default: keep original PDF pages (small output), add white redactions on each line bbox, then draw translated text into the same bbox.
+- Optional: `--rasterize-background` renders each page to an image first (much larger output).
 
 This is designed to keep the *visual* layout stable. (Text won’t be selectable like native PDF text in this v1 approach.)
 

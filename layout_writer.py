@@ -14,6 +14,7 @@ class RenderConfig:
     max_shrink_steps: int = 10
     dpi: int = 150
     whiteout_expand: float = 1.0
+    rasterize_background: bool = False
 
 
 def pick_default_font_path() -> str | None:
@@ -48,61 +49,90 @@ def render_translated_pdf(
 ) -> None:
     """
     Creates a visually translated PDF by:
-    - rasterizing each source page as background image
-    - white-out each original line bbox
-    - drawing translated text inside the same bbox
+    Default (recommended): keep original pages (small output),
+    white-out each original line bbox, draw translated text inside same bbox.
+
+    Optional: rasterize each source page as background image (large output).
     """
     src = fitz.open(src_pdf_path)
-    out = fitz.open()
 
     font_path = cfg.font_path or pick_default_font_path()
-    font = fitz.Font(fontfile=font_path) if font_path else None
+    _ = fitz.Font(fontfile=font_path) if font_path else None  # validate font if provided
 
-    for page_index in range(src.page_count):
-        page = src.load_page(page_index)
-        rect = page.rect
+    if cfg.rasterize_background:
+        out = fitz.open()
+        for page_index in range(src.page_count):
+            page = src.load_page(page_index)
+            rect = page.rect
 
-        pix = page.get_pixmap(dpi=cfg.dpi, alpha=False)
-        bg_bytes = pix.tobytes("png")
+            pix = page.get_pixmap(dpi=cfg.dpi, alpha=False)
+            bg_bytes = pix.tobytes("png")
 
-        out_page = out.new_page(width=rect.width, height=rect.height)
-        out_page.insert_image(rect, stream=bg_bytes, keep_proportion=True)
+            out_page = out.new_page(width=rect.width, height=rect.height)
+            out_page.insert_image(rect, stream=bg_bytes, keep_proportion=True)
+            _render_lines_on_page(out_page, pages_lines, page_index, cfg, font_path)
 
-        lines = pages_lines[page_index] if page_index < len(pages_lines) else []
-        for line in lines:
-            bbox = line.get("bbox")
-            translated = line.get("translated", "")
-            if not bbox or not translated:
-                continue
+        out.save(out_pdf_path, garbage=4, deflate=True, clean=True)
+        out.close()
+    else:
+        # Edit original PDF in-memory and save compressed.
+        for page_index in range(src.page_count):
+            page = src.load_page(page_index)
+            lines = pages_lines[page_index] if page_index < len(pages_lines) else []
 
-            r = _expanded(_rect_from_bbox(bbox), cfg.whiteout_expand)
+            # Add redactions to erase original text under each line bbox.
+            for line in lines:
+                bbox = line.get("bbox")
+                translated = line.get("translated", "")
+                if not bbox or not translated:
+                    continue
+                r = _expanded(_rect_from_bbox(bbox), cfg.whiteout_expand)
+                page.add_redact_annot(r, fill=(1, 1, 1))
 
-            # White-out original text region.
-            out_page.draw_rect(r, color=None, fill=(1, 1, 1), overlay=True)
+            # Apply redactions (API differs slightly across versions).
+            try:
+                page.apply_redactions()
+            except TypeError:
+                page.apply_redactions(0)
 
-            base_size = float(line.get("size") or 10.0) * cfg.default_font_size_scale
-            size = base_size
+            _render_lines_on_page(page, pages_lines, page_index, cfg, font_path)
 
-            # Try shrinking until it fits.
-            for _ in range(cfg.max_shrink_steps + 1):
-                if size < cfg.min_font_size:
-                    size = cfg.min_font_size
-                rc = out_page.insert_textbox(
-                    r,
-                    translated,
-                    fontfile=font_path if font_path else None,
-                    fontname=None if font_path else "helv",
-                    fontsize=size,
-                    color=(0, 0, 0),
-                    align=fitz.TEXT_ALIGN_LEFT,
-                    overlay=True,
-                )
-                # insert_textbox returns > 0 if there is leftover space; < 0 means text did not fit.
-                if rc >= 0:
-                    break
-                size *= 0.9
-
-    out.save(out_pdf_path)
-    out.close()
+        src.save(out_pdf_path, garbage=4, deflate=True, clean=True)
     src.close()
 
+
+def _render_lines_on_page(
+    page: fitz.Page,
+    pages_lines: list[list[dict]],
+    page_index: int,
+    cfg: RenderConfig,
+    font_path: str | None,
+) -> None:
+    lines = pages_lines[page_index] if page_index < len(pages_lines) else []
+    for line in lines:
+        bbox = line.get("bbox")
+        translated = line.get("translated", "")
+        if not bbox or not translated:
+            continue
+
+        r = _expanded(_rect_from_bbox(bbox), cfg.whiteout_expand)
+        base_size = float(line.get("size") or 10.0) * cfg.default_font_size_scale
+        size = base_size
+
+        # Try shrinking until it fits.
+        for _ in range(cfg.max_shrink_steps + 1):
+            if size < cfg.min_font_size:
+                size = cfg.min_font_size
+            rc = page.insert_textbox(
+                r,
+                translated,
+                fontfile=font_path if font_path else None,
+                fontname=None if font_path else "helv",
+                fontsize=size,
+                color=(0, 0, 0),
+                align=fitz.TEXT_ALIGN_LEFT,
+                overlay=True,
+            )
+            if rc >= 0:
+                break
+            size *= 0.9
