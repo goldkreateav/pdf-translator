@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import fitz  # PyMuPDF
 
 from layout_writer import RenderConfig, render_translated_pdf
+from ocr_extractor import OcrLine, extract_ocr_lines_by_page
 from translator_client import build_in_run_glossary, load_openai_compat_config, translate_block_lines
 
 
@@ -51,6 +52,21 @@ def extract_lines_by_page(pdf_path: str) -> list[list[ExtractedLine]]:
             logger.info("Extracted page %d/%d: %d line(s)", pno + 1, doc.page_count, len(page_lines))
     doc.close()
     return pages
+
+
+def _convert_ocr_pages(ocr_pages: list[list[OcrLine]]) -> list[list[ExtractedLine]]:
+    return [
+        [
+            ExtractedLine(
+                line_id=ln.line_id,
+                text=ln.text,
+                bbox=ln.bbox,
+                size=ln.size,
+            )
+            for ln in page
+        ]
+        for page in ocr_pages
+    ]
 
 
 def group_lines_into_blocks(lines: list[ExtractedLine]) -> list[list[ExtractedLine]]:
@@ -152,6 +168,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--output", default="translated.pdf", help="Output PDF path (default: translated.pdf)")
     p.add_argument("--source", default="zh", help="Source language code (default: zh)")
     p.add_argument("--target", default="ru", help="Target language code (default: ru)")
+    p.add_argument("--ocr", choices=["auto", "on", "off"], default="auto", help="OCR mode for scanned PDFs (default: auto)")
+    p.add_argument("--ocr-lang", default="ch_sim", help="EasyOCR language code(s), comma-separated (default: ch_sim)")
+    p.add_argument("--ocr-dpi", type=int, default=220, help="OCR render DPI (default: 220)")
+    p.add_argument("--no-translate", action="store_true", help="Skip API translation and render extracted text as-is.")
     p.add_argument("--log-level", default="INFO", help="Log level: DEBUG, INFO, WARNING, ERROR (default: INFO)")
 
     p.add_argument("--api-base", default=None, help="OpenAI-compatible API base URL (env: OPENAI_API_BASE)")
@@ -185,20 +205,53 @@ def main() -> int:
 
     pages = extract_lines_by_page(pdf_path)
     total_lines = sum(len(p) for p in pages)
-    logger.info("Total extracted lines: %d", total_lines)
+    logger.info("Total extracted lines (text layer): %d", total_lines)
+
+    ocr_langs = [x.strip() for x in str(args.ocr_lang).split(",") if x.strip()]
+    if args.ocr == "on":
+        logger.info("OCR mode: forced on")
+        ocr_pages = extract_ocr_lines_by_page(pdf_path, ocr_langs=ocr_langs, dpi=args.ocr_dpi)
+        pages = _convert_ocr_pages(ocr_pages)
+        total_lines = sum(len(p) for p in pages)
+        logger.info("Total extracted lines (OCR): %d", total_lines)
+    elif args.ocr == "auto" and total_lines == 0:
+        logger.info("OCR fallback: enabled (no extractable text layer)")
+        ocr_pages = extract_ocr_lines_by_page(pdf_path, ocr_langs=ocr_langs, dpi=args.ocr_dpi)
+        pages = _convert_ocr_pages(ocr_pages)
+        total_lines = sum(len(p) for p in pages)
+        logger.info("Total extracted lines (OCR): %d", total_lines)
+    else:
+        logger.info("OCR fallback: not used")
+
     if total_lines == 0:
         raise SystemExit(
-            "No text lines extracted from PDF. If this is a scanned/image PDF, OCR is required (not implemented in v1)."
+            "No text lines extracted. Try --ocr on --ocr-lang ch_sim (or suitable language for your document)."
         )
 
-    pages_lines = translate_pages(
-        pages=pages,
-        source_lang=args.source,
-        target_lang=args.target,
-        api_base=args.api_base,
-        api_key=args.api_key,
-        model=args.model,
-    )
+    if args.no_translate:
+        logger.warning("No-translate mode is ON: API translation is skipped.")
+        pages_lines = [
+            [
+                {
+                    "line_id": ln.line_id,
+                    "text": ln.text,
+                    "translated": ln.text,
+                    "bbox": ln.bbox,
+                    "size": ln.size,
+                }
+                for ln in page
+            ]
+            for page in pages
+        ]
+    else:
+        pages_lines = translate_pages(
+            pages=pages,
+            source_lang=args.source,
+            target_lang=args.target,
+            api_base=args.api_base,
+            api_key=args.api_key,
+            model=args.model,
+        )
 
     translated_lines = sum(1 for p in pages_lines for ln in p if (ln.get("translated") or "").strip())
     logger.info("Total translated lines: %d", translated_lines)
