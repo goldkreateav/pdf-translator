@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 from dataclasses import dataclass
 
@@ -16,6 +17,9 @@ class ExtractedLine:
     text: str
     bbox: tuple[float, float, float, float]
     size: float
+
+
+logger = logging.getLogger("pdf_translator")
 
 
 def _norm_space(s: str) -> str:
@@ -43,6 +47,8 @@ def extract_lines_by_page(pdf_path: str) -> list[list[ExtractedLine]]:
                 line_id = f"p{pno}_b{b_idx}_l{l_idx}"
                 page_lines.append(ExtractedLine(line_id=line_id, text=text, bbox=bbox, size=size))
         pages.append(page_lines)
+        if (pno + 1) % 5 == 0 or pno == doc.page_count - 1:
+            logger.info("Extracted page %d/%d: %d line(s)", pno + 1, doc.page_count, len(page_lines))
     doc.close()
     return pages
 
@@ -92,14 +98,20 @@ def translate_pages(
     model: str | None,
 ) -> list[list[dict]]:
     cfg = load_openai_compat_config(api_base=api_base, api_key=api_key, model=model)
+    logger.info("Using API base: %s", cfg.api_base)
+    logger.info("Using model: %s", cfg.model)
+    if not cfg.api_key:
+        logger.warning("No API key provided (OPENAI_API_KEY or --api-key). If your endpoint requires a key, calls will fail.")
 
     # In-run glossary seeded from the whole document (pass-through tokens).
     all_texts = (ln.text for page in pages for ln in page)
     glossary = build_in_run_glossary(all_texts)
+    logger.info("Glossary passthrough tokens: %d", len(glossary))
 
     out_pages: list[list[dict]] = []
-    for page_lines in pages:
+    for page_index, page_lines in enumerate(pages):
         blocks = group_lines_into_blocks(page_lines)
+        logger.info("Page %d: %d line(s), %d block(s)", page_index + 1, len(page_lines), len(blocks))
 
         translated_by_id: dict[str, str] = {}
         for i, block in enumerate(blocks):
@@ -107,6 +119,7 @@ def translate_pages(
             next_context = "\n".join([x.text for x in blocks[i + 1]]) if i + 1 < len(blocks) else None
 
             req_lines = [{"line_id": x.line_id, "text": x.text} for x in block]
+            logger.info("Translating page %d block %d/%d (%d line(s))", page_index + 1, i + 1, len(blocks), len(req_lines))
             mapping = translate_block_lines(
                 cfg=cfg,
                 source_lang=source_lang,
@@ -139,6 +152,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--output", default="translated.pdf", help="Output PDF path (default: translated.pdf)")
     p.add_argument("--source", default="zh", help="Source language code (default: zh)")
     p.add_argument("--target", default="ru", help="Target language code (default: ru)")
+    p.add_argument("--log-level", default="INFO", help="Log level: DEBUG, INFO, WARNING, ERROR (default: INFO)")
 
     p.add_argument("--api-base", default=None, help="OpenAI-compatible API base URL (env: OPENAI_API_BASE)")
     p.add_argument("--api-key", default=None, help="API key (env: OPENAI_API_KEY)")
@@ -156,13 +170,27 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_arg_parser().parse_args()
+    logging.basicConfig(
+        level=getattr(logging, str(args.log_level).upper(), logging.INFO),
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
     pdf_path = args.pdf_path
     out_path = args.output
 
     if not os.path.exists(pdf_path):
         raise SystemExit(f"Input PDF not found: {pdf_path}")
 
+    logger.info("Input: %s", os.path.abspath(pdf_path))
+    logger.info("Output: %s", os.path.abspath(out_path))
+
     pages = extract_lines_by_page(pdf_path)
+    total_lines = sum(len(p) for p in pages)
+    logger.info("Total extracted lines: %d", total_lines)
+    if total_lines == 0:
+        raise SystemExit(
+            "No text lines extracted from PDF. If this is a scanned/image PDF, OCR is required (not implemented in v1)."
+        )
+
     pages_lines = translate_pages(
         pages=pages,
         source_lang=args.source,
@@ -171,6 +199,14 @@ def main() -> int:
         api_key=args.api_key,
         model=args.model,
     )
+
+    translated_lines = sum(1 for p in pages_lines for ln in p if (ln.get("translated") or "").strip())
+    logger.info("Total translated lines: %d", translated_lines)
+    if translated_lines == 0:
+        raise SystemExit(
+            "Got 0 translated lines. Check that your API base/model/key are correct and that the PDF contains extractable text."
+        )
+
     render_translated_pdf(
         src_pdf_path=pdf_path,
         out_pdf_path=out_path,
@@ -181,6 +217,7 @@ def main() -> int:
             rasterize_background=bool(args.rasterize_background),
         ),
     )
+    logger.info("Done. Wrote: %s", os.path.abspath(out_path))
     return 0
 
 

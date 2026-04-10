@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import random
 import time
@@ -13,6 +14,8 @@ import httpx
 class TranslationError(RuntimeError):
     pass
 
+
+logger = logging.getLogger("pdf_translator.translate")
 
 @dataclass(frozen=True)
 class OpenAICompatConfig:
@@ -137,6 +140,7 @@ def translate_block_lines(
     with httpx.Client(timeout=timeout) as client:
         for attempt in range(cfg.max_retries):
             try:
+                logger.debug("POST %s (attempt %d/%d)", url, attempt + 1, cfg.max_retries)
                 r = client.post(url, headers=headers, json=payload)
                 if r.status_code >= 400:
                     raise TranslationError(f"HTTP {r.status_code}: {r.text[:500]}")
@@ -159,6 +163,7 @@ def translate_block_lines(
                 return mapping
             except Exception as e:
                 last_err = e
+                logger.warning("Translate attempt %d failed: %s", attempt + 1, str(e))
                 sleep_s = min(10.0, (2**attempt) + random.random())
                 time.sleep(sleep_s)
 

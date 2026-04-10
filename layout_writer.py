@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 
@@ -15,6 +16,8 @@ class RenderConfig:
     dpi: int = 150
     whiteout_expand: float = 1.0
     rasterize_background: bool = False
+
+logger = logging.getLogger("pdf_translator.render")
 
 
 def pick_default_font_path() -> str | None:
@@ -60,6 +63,7 @@ def render_translated_pdf(
     _ = fitz.Font(fontfile=font_path) if font_path else None  # validate font if provided
 
     if cfg.rasterize_background:
+        logger.info("Render mode: rasterize background (large output)")
         out = fitz.open()
         for page_index in range(src.page_count):
             page = src.load_page(page_index)
@@ -75,12 +79,14 @@ def render_translated_pdf(
         out.save(out_pdf_path, garbage=4, deflate=True, clean=True)
         out.close()
     else:
+        logger.info("Render mode: edit original PDF (small output)")
         # Edit original PDF in-memory and save compressed.
         for page_index in range(src.page_count):
             page = src.load_page(page_index)
             lines = pages_lines[page_index] if page_index < len(pages_lines) else []
 
             # Add redactions to erase original text under each line bbox.
+            redactions = 0
             for line in lines:
                 bbox = line.get("bbox")
                 translated = line.get("translated", "")
@@ -88,6 +94,7 @@ def render_translated_pdf(
                     continue
                 r = _expanded(_rect_from_bbox(bbox), cfg.whiteout_expand)
                 page.add_redact_annot(r, fill=(1, 1, 1))
+                redactions += 1
 
             # Apply redactions (API differs slightly across versions).
             try:
@@ -96,6 +103,8 @@ def render_translated_pdf(
                 page.apply_redactions(0)
 
             _render_lines_on_page(page, pages_lines, page_index, cfg, font_path)
+            if (page_index + 1) % 5 == 0 or page_index == src.page_count - 1:
+                logger.info("Rendered page %d/%d (redactions: %d)", page_index + 1, src.page_count, redactions)
 
         src.save(out_pdf_path, garbage=4, deflate=True, clean=True)
     src.close()
