@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from tqdm import tqdm
 
 from src.layout import words_to_blocks
-from src.masking import remove_text_preserve_lines
+from src.masking import remove_symbols_preserve_lines, remove_text_preserve_lines
 from src.ocr import extract_words
 from src.pdf_to_images import rasterize_pdf
 from src.render_pdf import render_translated_pdf
@@ -94,8 +94,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--mask-mode",
-        choices=["text_pixels"],
-        default="text_pixels",
+        choices=["text_pixels", "symbols"],
+        default="symbols",
         help="Masking mode for removing source text before overlay.",
     )
     parser.add_argument(
@@ -197,6 +197,10 @@ def main() -> None:
             psm=args.tesseract_psm,
         )
         blocks = words_to_blocks(words=words, page_index=page_index, granularity=args.block_granularity)
+        debug_dir = None
+        if args.debug_dir:
+            debug_dir = os.path.join(args.debug_dir, f"page_{page_index+1:04d}")
+
         if args.mask_mode == "text_pixels":
             cleaned_page = remove_text_preserve_lines(
                 image=page_image,
@@ -204,6 +208,14 @@ def main() -> None:
                 preserve_lines=args.preserve_lines,
                 inpaint_mode=args.inpaint,
                 padding=args.mask_padding,
+                debug_dir=debug_dir,
+            )
+        elif args.mask_mode == "symbols":
+            cleaned_page = remove_symbols_preserve_lines(
+                image=page_image,
+                preserve_lines=args.preserve_lines,
+                inpaint_mode=args.inpaint,
+                debug_dir=debug_dir,
             )
         else:
             cleaned_page = page_image
