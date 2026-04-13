@@ -1,0 +1,10 @@
+openai>=1.0.0
+pdf2image>=1.17.0
+pytesseract>=0.3.10
+pillow>=10.0.0
+reportlab>=4.0.0
+python-dotenv>=1.0.0
+tqdm>=4.66.0
+pikepdf>=9.0.0
+opencv-python>=4.10.0
+numpy>=1.26.0
