@@ -31,6 +31,13 @@ FISH_RU = [
 ]
 
 
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("Value must be >= 1.")
+    return parsed
+
+
 def _fake_russian_fish(text: str) -> str:
     seed = hash(text)
     rng = random.Random(seed)
@@ -160,9 +167,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--batch-size",
-        type=int,
+        type=_positive_int,
         default=20,
         help="Translation batch size",
+    )
+    parser.add_argument(
+        "--api-concurrency",
+        type=_positive_int,
+        default=1,
+        help="Maximum number of API requests in flight at once.",
     )
     parser.add_argument(
         "--skip-translate",
@@ -222,23 +235,30 @@ def main() -> None:
         pages_blocks.append(blocks)
         cleaned_page_images.append(cleaned_page)
 
-    for page_idx, blocks in enumerate(tqdm(pages_blocks, desc="Translate"), start=0):
-        if args.skip_translate:
+    if args.skip_translate:
+        for page_idx, blocks in enumerate(tqdm(pages_blocks, desc="Translate"), start=0):
             for block in blocks:
                 block.translated_text = _fake_russian_fish(block.source_text)
-        else:
-            translated = translate_block_batch(
-                blocks=blocks,
-                source_lang=args.src_lang,
-                target_lang=args.tgt_lang,
-                model=args.openai_model,
-                batch_size=args.batch_size,
-                api_key=(args.openai_api_key or None),
-                base_url=(args.openai_base_url or None),
-            )
-            for block, translated_text in zip(blocks, translated):
-                block.translated_text = translated_text
-        pages_blocks[page_idx] = blocks
+            pages_blocks[page_idx] = blocks
+    else:
+        all_blocks = [block for blocks in pages_blocks for block in blocks]
+        translated_all = translate_block_batch(
+            blocks=all_blocks,
+            source_lang=args.src_lang,
+            target_lang=args.tgt_lang,
+            model=args.openai_model,
+            batch_size=args.batch_size,
+            concurrency=args.api_concurrency,
+            api_key=(args.openai_api_key or None),
+            base_url=(args.openai_base_url or None),
+        )
+        if len(translated_all) != len(all_blocks):
+            raise RuntimeError("Translation alignment error: count mismatch.")
+        translated_iter = iter(translated_all)
+        for page_idx, blocks in enumerate(tqdm(pages_blocks, desc="Apply translation"), start=0):
+            for block in blocks:
+                block.translated_text = next(translated_iter)
+            pages_blocks[page_idx] = blocks
 
     print("Rendering translated PDF...")
     render_translated_pdf(

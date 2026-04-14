@@ -44,6 +44,7 @@ Optional:
 - `--first-page 1 --last-page 1` for quick visual iteration
 - `--skip-translate` for debug output without OpenAI calls
 - `--openai-base-url "https://api.openai.com/v1"` for OpenAI-compatible proxies/hosts
+- `--api-concurrency 4` to run up to 4 translation API requests in parallel (`1` keeps sequential behavior)
 
 ## Smoke test script
 ```powershell
